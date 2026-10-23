@@ -7,32 +7,32 @@ on:
         description: "OpenWrt version"
         type: string
         required: true
-        default: "SNAPSHOT"
+        default: "24.10.6"
       amneziawg_version:
         description: "AmneziaWG version"
         type: string
         required: true
-        default: "master"
+        default: "v3.1.2"
       openwrt_arch:
         description: "OpenWrt arch"
         type: string
         required: true
-        default: "aarch64_cortex-a53"
+        default: "aarch64_generic"
       openwrt_target:
         description: "OpenWrt target"
         type: string
         required: true
-        default: "mediatek"
+        default: "rockchip"
       openwrt_subtarget:
         description: "OpenWrt subtarget"
         type: string
         required: true
-        default: "filogic"
+        default: "armv8"
       compile_kmod:
-        description: "Compile kernel module inplementation"
+        description: "Compile kernel module implementation"
         type: boolean
         required: true
-        default: true
+        default: false
       compile_go:
         description: "Compile Go implementation"
         type: boolean
@@ -110,12 +110,18 @@ jobs:
         # it is actually too old.
         if [ "${{ env.compile_go }}" = "true" ]; then
           sdk_go=$(sed -n 's/^GO_DEFAULT_VERSION:=//p' openwrt/feeds/packages/lang/golang/golang-values.mk)
+          if [ -z "$sdk_go" ]; then
+            sdk_go=$(sed -n 's/^GO_VERSION_MAJOR_MINOR:=//p' openwrt/feeds/packages/lang/golang/golang/Makefile)
+          fi
           need_go=1.25
-        if [ -z "$sdk_go" ] || \
-           [ "$(printf '%s\n%s\n' "$need_go" "$sdk_go" | sort -V | head -n1)" != "$need_go" ]; then
+          if [ -z "$sdk_go" ] || \
+             [ "$(printf '%s\n%s\n' "$need_go" "$sdk_go" | sort -V | head -n1)" != "$need_go" ]; then
             echo "SDK ships Go $sdk_go (< $need_go); overriding golang feed from openwrt/packages."
             rm -r openwrt/feeds/packages/lang/golang
             cp -r packages/lang/golang openwrt/feeds/packages/lang
+            # The new Go feed contains versioned compiler and bootstrap packages.
+            # Refresh its index without reverting the copied files from Git.
+            ./openwrt/scripts/feeds update -i packages
           else
             echo "SDK ships Go ${sdk_go:-unknown} (>= $need_go); keeping the SDK golang feed."
           fi
@@ -131,19 +137,21 @@ jobs:
         set -e -x
         cd openwrt
         if [ "${{ env.compile_kmod }}" = "true" ]; then
-          make package/kmod-amneziawg/{clean,download,prepare,compile} -j $(nproc)
+          make package/kmod-amneziawg/{clean,download,prepare,compile} -j "$(nproc)" V=s
         fi
         if [ "${{ env.compile_go }}" = "true" ]; then
-          make package/amneziawg-go/{clean,download,prepare,compile} -j $(nproc)
+          make package/amneziawg-go/{clean,download,prepare,compile} -j "$(nproc)" V=s
         fi
-        make package/luci-proto-amneziawg/{clean,download,prepare,compile} -j $(nproc)
-        make package/amneziawg-tools/{clean,download,prepare,compile} -j $(nproc)
+        make package/luci-proto-amneziawg/{clean,download,prepare,compile} -j "$(nproc)" V=s
+        make package/amneziawg-tools/{clean,download,prepare,compile} -j "$(nproc)" V=s
 
     - name: Prepare artifacts
       run: |
         set -e -x
         mkdir awgrelease
-        find "openwrt/bin/targets/${{ inputs.openwrt_target }}/${{ inputs.openwrt_subtarget }}/packages" -maxdepth 1 -type f -name 'kmod-amneziawg*' -exec cp {} awgrelease \;
+        if [ "${{ inputs.compile_kmod }}" = "true" ]; then
+          find "openwrt/bin/targets/${{ inputs.openwrt_target }}/${{ inputs.openwrt_subtarget }}/packages" -maxdepth 1 -type f -name 'kmod-amneziawg*' -exec cp {} awgrelease \;
+        fi
         find "openwrt/bin/packages/${{ inputs.openwrt_arch }}/awgopenwrt" -maxdepth 1 -type f \( -name '*.ipk' -o -name '*.apk' \) -exec cp {} awgrelease \;
 
         # The kernel module can only be installed on a firmware whose kernel
@@ -172,3 +180,4 @@ jobs:
       with:
         name: amneziawg-${{ inputs.openwrt_version }}_${{ inputs.openwrt_arch }}_${{ inputs.openwrt_target }}_${{ inputs.openwrt_subtarget }}
         path: awgrelease/*
+        if-no-files-found: error
