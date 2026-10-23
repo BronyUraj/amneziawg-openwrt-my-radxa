@@ -78,16 +78,23 @@ jobs:
         else
           base_url="https://downloads.openwrt.org/releases/${{ inputs.openwrt_version }}/targets/${{ inputs.openwrt_target }}/${{ inputs.openwrt_subtarget }}/"
         fi
-        sdk_url=$(curl -s "${base_url}" | grep -oP 'href="openwrt-sdk[^"]+\.tar\.(zst|xz)"' | sed -e 's/href="//' -e 's/"$//' | head -n1)
-        if [[ -z "$sdk_url" ]]; then
-          echo "SDK file not found."
-          exit 1
-        fi
-        curl -fsLO "$base_url$sdk_url"
-        file_name=$(basename "$sdk_url")
-        tar -xf "$file_name"
-        rm -f *.tar.zst *.tar.xz
-        mv openwrt-sdk* openwrt
+        file_name="openwrt-sdk-24.10.6-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+        
+        curl -fL \
+          --retry 5 \
+          --retry-delay 3 \
+          --connect-timeout 20 \
+          --max-time 900 \
+          -o "$file_name" \
+          "${base_url}${file_name}"
+        
+        printf '%s  %s\n' \
+          '5777901cd7fb62609285845752a5ebd9aa7fcda20778c8dd6000a710f57356fd' \
+          "$file_name" | sha256sum -c -
+        
+        mkdir -p openwrt
+        tar -xf "$file_name" -C openwrt --strip-components=1
+        rm -- "$file_name"
 
         echo "src-cpy awgopenwrt ../amneziawg" >> openwrt/feeds.conf.default
         ./openwrt/scripts/feeds update -a
@@ -104,7 +111,8 @@ jobs:
         if [ "${{ env.compile_go }}" = "true" ]; then
           sdk_go=$(sed -n 's/^GO_DEFAULT_VERSION:=//p' openwrt/feeds/packages/lang/golang/golang-values.mk)
           need_go=1.25
-          if [ -n "$sdk_go" ] && [ "$(printf '%s\n%s\n' "$need_go" "$sdk_go" | sort -V | head -n1)" != "$need_go" ]; then
+        if [ -z "$sdk_go" ] || \
+           [ "$(printf '%s\n%s\n' "$need_go" "$sdk_go" | sort -V | head -n1)" != "$need_go" ]; then
             echo "SDK ships Go $sdk_go (< $need_go); overriding golang feed from openwrt/packages."
             rm -r openwrt/feeds/packages/lang/golang
             cp -r packages/lang/golang openwrt/feeds/packages/lang
